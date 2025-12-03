@@ -24,31 +24,29 @@ st.write(
 
 # Data loading functions (with caching)
 @st.cache_data
-def load_stock_data(ticker: str, start: str, end: str) -> pd.DataFrame:
-    """Download daily stock data and compute returns and cumulative returns."""
-    data = yf.download(ticker, start=start, end=end, progress=False)
-    if data.empty:
-        return data
-    # Ensure timezone-naive index for merging
-    data.index = data.index.tz_localize(None)
-    data["Return"] = data["Adj Close"].pct_change()
-    data["CumReturn"] = (1 + data["Return"]).cumprod() - 1
-    return data
-
-
-@st.cache_data
 def load_fred_series(series_id: str) -> pd.DataFrame:
     """
-    Load a single time series from FRED via CSV (no API key required).
-    Examples: FEDFUNDS (policy rate), CPIAUCSL (CPI), DGS10 (10y Treasury yield).
+    Load data from the St. Louis Fed API (no API key required).
+    Reliable on Streamlit Cloud.
     """
-    url = f"https://fred.stlouisfed.org/graph/fredgraph.csv?id={series_id}"
-    df = pd.read_csv(url)
-    df["DATE"] = pd.to_datetime(df["DATE"])
-    df.set_index("DATE", inplace=True)
-    df.replace(".", np.nan, inplace=True)
-    df[series_id] = df[series_id].astype(float)
-    return df
+    url = (
+        "https://api.stlouisfed.org/fred/series/observations"
+        f"?series_id={series_id}&api_key=guest&file_type=json"
+    )
+
+    try:
+        data = pd.read_json(url)
+        obs = pd.json_normalize(data["observations"])
+        obs["date"] = pd.to_datetime(obs["date"])
+        obs["value"] = pd.to_numeric(obs["value"], errors="coerce")
+
+        df = obs.set_index("date")[["value"]]
+        df.columns = [series_id]
+        return df
+
+    except Exception as e:
+        st.error(f"Failed to load FRED series {series_id}: {e}")
+        return pd.DataFrame()
 
 
 @st.cache_data
