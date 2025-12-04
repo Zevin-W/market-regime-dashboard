@@ -5,3 +5,4 @@ yfinance
 plotly
 statsmodels
 requests
+scikit-learn
