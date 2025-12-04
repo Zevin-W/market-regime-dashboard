@@ -8,9 +8,9 @@ import plotly.graph_objects as go
 import statsmodels.api as sm
 
 
-
+# ==========================
 # Streamlit basic settings
-
+# ==========================
 st.set_page_config(
     page_title="Market Regime Dashboard",
     layout="wide",
@@ -30,19 +30,20 @@ lagged correlations, and a simple predictive model.
 )
 
 
+# ==========================
 # Data loading and cleaning
-
+# ==========================
 @st.cache_data
 def load_clean_data():
     end = datetime.today()
     start = end - timedelta(days=365 * 20)
 
-    # 1. S&P 500
+    # 1. S&P 500 (daily)
     sp500 = yf.download("^GSPC", start=start, end=end, progress=False)
     sp500 = sp500.rename(columns={"Close": "SP500"})
     sp500 = sp500[["SP500"]]
 
-    # 2. FRED helper
+    # 2. Helper: load FRED series (monthly or daily)
     def load_fred(series_id):
         url = f"https://fred.stlouisfed.org/graph/fredgraph.csv?id={series_id}"
         df = pd.read_csv(url)
@@ -53,9 +54,9 @@ def load_clean_data():
         df[series_id] = df[series_id].astype(float)
         return df
 
-    cpi = load_fred("CPIAUCSL").rename(columns={"CPIAUCSL": "CPI"})
-    ffr = load_fred("FEDFUNDS").rename(columns={"FEDFUNDS": "FFR"})
-    dgs10 = load_fred("DGS10")
+    cpi = load_fred("CPIAUCSL").rename(columns={"CPIAUCSL": "CPI"})       # monthly
+    ffr = load_fred("FEDFUNDS").rename(columns={"FEDFUNDS": "FFR"})      # monthly
+    dgs10 = load_fred("DGS10")                                            # daily (with gaps)
 
     # 3. Unified daily index
     full_range = pd.date_range(sp500.index.min(), sp500.index.max(), freq="D")
@@ -65,7 +66,7 @@ def load_clean_data():
     ffr_raw = ffr.reindex(full_range)
     dgs10_raw = dgs10.reindex(full_range)
 
-    # Missing counts before interpolation
+    # Missing counts BEFORE interpolation
     merged_raw = pd.DataFrame(index=full_range)
     merged_raw["SP500"] = sp500_raw["SP500"]
     merged_raw["CPI"] = cpi_raw["CPI"]
@@ -113,15 +114,17 @@ def load_clean_data():
     # Drop rows where key variables are missing for monthly analysis
     monthly = monthly.dropna(subset=["SP500_ret", "CPI_yoy", "FFR_yoy", "YieldCurve"])
 
-    return merged, monthly, missing_before, missing_after
+    # !!! IMPORTANT: also return merged_raw for missingness plots
+    return merged, monthly, missing_before, missing_after, merged_raw
 
 
-daily_df, monthly_df, miss_before, miss_after = load_clean_data()
+# Unpack ALL 5 returned objects (修正点 #1)
+daily_df, monthly_df, miss_before, miss_after, raw_df = load_clean_data()
 
 
-
+# ==========================
 # Tabs
-
+# ==========================
 tab_intro, tab_clean, tab_explore, tab_regime, tab_lag, tab_model, tab_conclusion = st.tabs(
     [
         "Overview",
@@ -130,14 +133,14 @@ tab_intro, tab_clean, tab_explore, tab_regime, tab_lag, tab_model, tab_conclusio
         "Economic Regimes",
         "Lag Correlation",
         "Predictive Modeling",
-        "Conclusion"
+        "Conclusion",
     ]
 )
 
 
-
+# ==========================
 # Tab 1: Overview
-
+# ==========================
 with tab_intro:
     st.subheader("Overview of S&P 500 and Macroeconomic Context")
 
@@ -174,9 +177,9 @@ spanning roughly the last 20 years.
     st.plotly_chart(fig_price, use_container_width=True)
 
 
-
+# ==========================
 # Tab 2: Data Cleaning & Missingness
-
+# ==========================
 with tab_clean:
     st.subheader("Data Cleaning and Missingness")
 
@@ -208,10 +211,24 @@ We first align all series on a daily calendar, then apply interpolation and forw
     st.markdown("Sample of cleaned daily data:")
     st.dataframe(daily_df.head())
 
+    st.markdown("### Missingness Pattern Before Cleaning (Daily Grid)")
+
+    # 只看四个主变量的缺失：1=缺失, 0=不缺
+    na_matrix = raw_df[["SP500", "CPI", "FFR", "DGS10"]].isna().astype(int)
+
+    fig_na = px.imshow(
+        na_matrix.T,
+        aspect="auto",
+        color_continuous_scale=["#222222", "#f5f5f5"],
+        labels={"x": "Date", "y": "Series", "color": "Missing"},
+        title="Missing Data Pattern (1 = missing)",
+    )
+    st.plotly_chart(fig_na, use_container_width=True)
 
 
+# ==========================
 # Tab 3: Exploratory Analysis
-
+# ==========================
 with tab_explore:
     st.subheader("Exploratory Analysis")
 
@@ -246,10 +263,77 @@ This highlights co-movements between the S&P 500 and macro variables.
     )
     st.plotly_chart(fig_corr, use_container_width=True)
 
+    # ---- Original time series (levels) ----
+    st.markdown("### Original Time Series (Daily, After Cleaning)")
+
+    from plotly.subplots import make_subplots
+
+    fig_levels = make_subplots(
+        rows=2,
+        cols=2,
+        shared_xaxes=True,
+        subplot_titles=("S&P 500", "CPI (Level)", "FFR", "10Y Treasury Yield"),
+    )
+
+    d = daily_df  # 简写
+
+    fig_levels.add_trace(
+        go.Scatter(x=d.index, y=d["SP500"], name="SP500"),
+        row=1,
+        col=1,
+    )
+    fig_levels.add_trace(
+        go.Scatter(x=d.index, y=d["CPI"], name="CPI", line=dict(color="orange")),
+        row=1,
+        col=2,
+    )
+    fig_levels.add_trace(
+        go.Scatter(x=d.index, y=d["FFR"], name="FFR", line=dict(color="red")),
+        row=2,
+        col=1,
+    )
+    fig_levels.add_trace(
+        go.Scatter(x=d.index, y=d["DGS10"], name="10Y", line=dict(color="green")),
+        row=2,
+        col=2,
+    )
+
+    fig_levels.update_layout(height=600, showlegend=False)
+    st.plotly_chart(fig_levels, use_container_width=True)
+
+    # ---- PCA Analysis ----
+    st.markdown("### PCA: Principal Component Analysis on Macro Variables")
+
+    from sklearn.decomposition import PCA
+    from sklearn.preprocessing import StandardScaler
+
+    macro_cols = ["CPI", "FFR", "DGS10"]
+
+    pca_df = daily_df.dropna(subset=macro_cols).copy()
+
+    scaler = StandardScaler()
+    scaled = scaler.fit_transform(pca_df[macro_cols])
+
+    pca = PCA(n_components=2)
+    pcs = pca.fit_transform(scaled)
+
+    pca_df["PC1"] = pcs[:, 0]
+    pca_df["PC2"] = pcs[:, 1]
+
+    st.write("Explained Variance Ratio:", pca.explained_variance_ratio_)
+
+    fig_pca = px.line(
+        pca_df.reset_index(),
+        x="index",
+        y=["PC1", "PC2"],
+        title="Macro PCA Components Over Time (PC1 & PC2)",
+    )
+    st.plotly_chart(fig_pca, use_container_width=True)
 
 
+# ==========================
 # Tab 4: Economic Regimes
-
+# ==========================
 with tab_regime:
     st.subheader("Economic Regimes Based on Policy Rates")
 
@@ -285,84 +369,104 @@ We then examine S&P 500 monthly returns under each regime.
     st.plotly_chart(fig_box, use_container_width=True)
 
 
-
+# ==========================
 # Tab 5: Lag Correlation
-
+# ==========================
 with tab_lag:
     st.subheader("Lagged Correlation Between Macro and S&P 500 Returns")
 
     st.markdown(
         """
 We compute correlations between S&P 500 monthly returns and macro variables
-at different lags (0–12 months). A lag of k means the macro variable is shifted
-k months into the past.
+at different lags (–12 to +12 months). A lag of k means the macro variable is shifted
+k months into the past or future.
 """
     )
 
-    macro_choice = st.selectbox(
-        "Select macro variable:",
-        options=["CPI_yoy", "FFR_yoy", "YieldCurve"],
-        format_func=lambda x: {
-            "CPI_yoy": "CPI YoY",
-            "FFR_yoy": "FFR YoY",
-            "YieldCurve": "Yield Curve (10Y - FFR)",
-        }[x],
+    st.markdown("### Symmetric Lag Correlation (–12 to +12 months)")
+
+    max_lag = 12
+    macros = ["CPI_yoy", "FFR_yoy", "YieldCurve"]
+    macro_labels = {
+        "CPI_yoy": "CPI YoY",
+        "FFR_yoy": "FFR YoY",
+        "YieldCurve": "Yield Curve (10Y - FFR)",
+    }
+
+    lags = list(range(-max_lag, max_lag + 1))
+    corr_matrix = pd.DataFrame(index=macros, columns=lags, dtype=float)
+
+    for var in macros:
+        for L in lags:
+            x = monthly_df["SP500_ret"]
+            y = monthly_df[var]
+
+            if L > 0:
+                c = x[L:].corr(y[:-L])
+            elif L < 0:
+                c = x[:L].corr(y[-L:])
+            else:
+                c = x.corr(y)
+
+            corr_matrix.loc[var, L] = c
+
+    # 1) 三条线：每个宏变量一条 lag 曲线
+    st.markdown("#### Lag Correlation Curves")
+
+    fig_lines = go.Figure()
+    for var in macros:
+        fig_lines.add_trace(
+            go.Scatter(
+                x=lags,
+                y=corr_matrix.loc[var, :],
+                mode="lines",
+                name=macro_labels[var],
+            )
+        )
+    fig_lines.add_hline(y=0, line_dash="dash", line_color="gray")
+    fig_lines.add_vline(x=0, line_dash="dash", line_color="gray")
+    fig_lines.update_layout(
+        xaxis_title="Lag (months)",
+        yaxis_title="Correlation",
+        title="S&P 500 Returns vs Macro Variables (Symmetric Lag)",
     )
+    st.plotly_chart(fig_lines, use_container_width=True)
 
-    max_lag = st.slider("Maximum lag (months):", 0, 12, 12)
+    # 2) Heatmap：3 行 × (2*max_lag+1) 列
+    st.markdown("#### Lag Correlation Heatmap")
 
-    lag_results = []
-    for lag in range(0, max_lag + 1):
-        df_lag = monthly_df[["SP500_ret", macro_choice]].copy()
-        df_lag[macro_choice] = df_lag[macro_choice].shift(lag)
-        df_lag = df_lag.dropna()
-        if len(df_lag) > 5:
-            corr_val = df_lag["SP500_ret"].corr(df_lag[macro_choice])
-            lag_results.append({"Lag": lag, "Correlation": corr_val})
-
-    lag_df = pd.DataFrame(lag_results)
-
-    if not lag_df.empty:
-        fig_lag = px.bar(
-            lag_df,
-            x="Lag",
-            y="Correlation",
-            title=f"Lagged Correlation: S&P 500 Returns vs {macro_choice}",
-        )
-        fig_lag.add_hline(y=0, line_dash="dash", line_color="gray")
-        st.plotly_chart(fig_lag, use_container_width=True)
-
-        st.markdown(
-            """
-Interpretation:
-- Positive correlation at a certain lag suggests that higher values of the macro variable
-  tend to be associated with higher future equity returns.
-- Negative correlation suggests the opposite.
-"""
-        )
-    else:
-        st.write("Not enough data to compute lagged correlations for this setting.")
+    fig_heat = px.imshow(
+        corr_matrix,
+        x=lags,
+        y=[macro_labels[m] for m in macros],
+        color_continuous_scale="RdBu_r",
+        zmin=-1,
+        zmax=1,
+        labels={"x": "Lag (months)", "y": "Macro Variable", "color": "Corr"},
+        title="Lag Correlation Heatmap (S&P 500 Returns vs Macro)",
+    )
+    st.plotly_chart(fig_heat, use_container_width=True)
 
 
-
-
-# Tab 6: Predictive Modeling (Professional Version)
-
+# ==========================
+# Tab 6: Predictive Modeling
+# ==========================
 with tab_model:
-
     st.subheader("Predictive Modeling: Monthly Macro Regression")
 
-    st.markdown("""
-This section estimates a simple regression model to quantify how macroeconomic
-variables relate to S&P 500 monthly returns.  
-We use three explanatory variables:
+    st.markdown(
+        """
+This section estimates simple regression models to quantify how macroeconomic
+variables relate to S&P 500 monthly returns.
 
-- **CPI YoY change (CPI_yoy)**  
-- **Federal Funds Rate YoY (FFR_yoy)**  
-- **Yield Curve (10Y – FFR)**  
+We use three explanatory variables:
+- **CPI YoY change (CPI_yoy)**
+- **Federal Funds Rate YoY (FFR_yoy)**
+- **Yield Curve (10Y – FFR)**
 
 *This is not a trading model. It describes long-term macro relationships.*
-""")
+"""
+    )
 
     # Prepare data
     reg_cols = ["SP500_ret", "CPI_yoy", "FFR_yoy", "YieldCurve"]
@@ -375,59 +479,60 @@ We use three explanatory variables:
     model = sm.OLS(y, X).fit()
     reg_df["Predicted"] = model.predict(X)
 
+    # ----- A. Professional Summary Table -----
+    st.markdown("### Regression Coefficients Summary")
 
-    # A. Professional Summary Table (clean version)
-
-    st.markdown("###  Regression Coefficients Summary")
-
-    coef_table = pd.DataFrame({
-        "Coefficient": model.params,
-        "Std Error": model.bse,
-        "t-Stat": model.tvalues,
-        "P-value": model.pvalues
-    })
+    coef_table = pd.DataFrame(
+        {
+            "Coefficient": model.params,
+            "Std Error": model.bse,
+            "t-Stat": model.tvalues,
+            "P-value": model.pvalues,
+        }
+    )
 
     st.dataframe(coef_table.style.format("{:.4f}"))
 
-
-    # B. Plot: Actual vs Predicted
-
-    st.markdown("###  Actual vs Predicted Monthly Returns")
+    # ----- B. Plot: Actual vs Predicted -----
+    st.markdown("### Actual vs Predicted Monthly Returns")
 
     fig_pred = go.Figure()
-    fig_pred.add_trace(go.Scatter(
-        x=reg_df.index,
-        y=reg_df["SP500_ret"],
-        mode="lines",
-        name="Actual Returns",
-        line=dict(color="black")
-    ))
-    fig_pred.add_trace(go.Scatter(
-        x=reg_df.index,
-        y=reg_df["Predicted"],
-        mode="lines",
-        name="Predicted",
-        line=dict(color="red")
-    ))
+    fig_pred.add_trace(
+        go.Scatter(
+            x=reg_df.index,
+            y=reg_df["SP500_ret"],
+            mode="lines",
+            name="Actual Returns",
+            line=dict(color="black"),
+        )
+    )
+    fig_pred.add_trace(
+        go.Scatter(
+            x=reg_df.index,
+            y=reg_df["Predicted"],
+            mode="lines",
+            name="Predicted",
+            line=dict(color="red"),
+        )
+    )
     fig_pred.update_layout(
         title="Actual vs Predicted S&P 500 Monthly Returns",
         xaxis_title="Date",
         yaxis_title="Return",
-        legend=dict(orientation="h")
+        legend=dict(orientation="h"),
     )
     st.plotly_chart(fig_pred, use_container_width=True)
 
-
-    # C. Automatic Interpretation (AI-generated)
-
-    st.markdown("###  Interpretation")
+    # ----- C. Interpretation -----
+    st.markdown("### Interpretation")
 
     cpi_coef = model.params["CPI_yoy"]
     ffr_coef = model.params["FFR_yoy"]
     yc_coef = model.params["YieldCurve"]
     r2 = model.rsquared
 
-    st.markdown(f"""
+    st.markdown(
+        f"""
 **Model Fit**  
 - R-squared = **{r2:.3f}** (macro explains a small part of monthly returns — expected)
 
@@ -436,7 +541,7 @@ We use three explanatory variables:
   - Negative coefficient → *higher inflation tends to coincide with weaker equity performance*  
 
 - **FFR YoY ({ffr_coef:.3f})**  
-  - Very small + statistically insignificant → *policy rate changes do not directly predict monthly SP500 returns*
+  - Very small & statistically insignificant → *policy rate changes do not directly predict monthly SP500 returns*
 
 - **Yield Curve ({yc_coef:.3f})**  
   - Negative coefficient → *a flatter or inverted yield curve is associated with weaker future returns*
@@ -444,21 +549,60 @@ We use three explanatory variables:
 **Overall Conclusion**  
 Macro variables provide **economic context**, not **short-term predictive power**.  
 This model behaves as expected: inflation & curve inversion carry negative sign, while Fed rate changes alone have limited effect.
-""")
+"""
+    )
 
-    # Optionally show full statsmodel summary collapsed
+    # Full statsmodels summary (collapsible)
     with st.expander("📄 Full Statistical Output (for reviewers)"):
         st.text(model.summary().as_text())
 
+    # ----- D. Second Model: Random Forest Regression -----
+    st.markdown("## 🔥 Model Comparison: OLS vs Random Forest")
+
+    from sklearn.ensemble import RandomForestRegressor
+    from sklearn.model_selection import train_test_split
+    from sklearn.metrics import r2_score
+
+    reg_ml = reg_df.dropna()
+    X_ml = reg_ml[["CPI_yoy", "FFR_yoy", "YieldCurve"]]
+    y_ml = reg_ml["SP500_ret"]
+
+    X_train, X_test, y_train, y_test = train_test_split(
+        X_ml, y_ml, test_size=0.2, shuffle=False
+    )
+
+    rf = RandomForestRegressor(n_estimators=300, random_state=42)
+    rf.fit(X_train, y_train)
+
+    y_pred_rf = rf.predict(X_test)
+
+    # OLS predictions on the same test set
+    ols_pred = model.predict(sm.add_constant(X_test))
+
+    r2_rf = r2_score(y_test, y_pred_rf)
+    r2_ols = r2_score(y_test, ols_pred)
+
+    compare_df = pd.DataFrame(
+        {"Model": ["OLS Regression", "Random Forest"], "R2 Score": [r2_ols, r2_rf]}
+    )
+
+    st.dataframe(compare_df.style.format({"R2 Score": "{:.3f}"}))
+
+    fig_cmp = go.Figure()
+    fig_cmp.add_trace(go.Bar(x=["OLS", "Random Forest"], y=[r2_ols, r2_rf]))
+    fig_cmp.update_layout(title="Model Comparison (R² Score)")
+    st.plotly_chart(fig_cmp, use_container_width=True)
 
 
+# ==========================
 # Tab 7: Conclusion
-
+# ==========================
 with tab_conclusion:
     st.subheader("Final Conclusion")
 
-    st.markdown("""
-### ** Overall Conclusion**
+    st.markdown(
+        """
+### **Overall Conclusion**
 Across 20 years of macro-financial data, the S&P 500 shows consistent patterns in
 how it reacts to major macroeconomic forces. These relationships describe the 
 **environment** rather than predict precise short-term movements.
@@ -525,9 +669,10 @@ These regime results summarize the macro–equity interaction cleanly.
 
 ---
 
-### ** Final Thought**
+### **Final Thought**
 Macro variables alone cannot *predict* the S&P 500, but they provide a powerful lens
 for understanding **market regimes**, **risk environments**, and **forward return dispersion**.
 This project demonstrates how multi-frequency macro data can be
 cleaned, aligned, analyzed, and interpreted within a modern data-science workflow.
-""")
+"""
+    )
