@@ -1,6 +1,12 @@
 # market-regime-dashboard
-# Market Regime Dashboard
 
+To run this project:
+1. Install dependencies:
+   pip install -r requirements.txt
+2. Run Streamlit:
+   streamlit run "830 Final Project.py"
+
+   
 This project studies how the S&P 500 reacts to key macroeconomic variables over the past ~20 years.  
 The focus is on three main drivers:
 
